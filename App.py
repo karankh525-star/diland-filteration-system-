@@ -139,7 +139,7 @@ async def process_telegram_data(phone_numbers, t):
             })
         
         # Rate Limiting
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(0)
         progress_bar.progress((i + 1) / len(phone_numbers))
         
     await client.disconnect()
