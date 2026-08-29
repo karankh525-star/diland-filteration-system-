@@ -106,3 +106,90 @@ async def process_telegram_data(phone_numbers, t):
             active_days = "Unknown"
             
             if hasattr(user.status, 'was_online'):
+                last_online = user.status.was_online
+                last_seen = last_online.strftime('%Y-%m-%d %H:%M:%S')
+                now = datetime.now(timezone.utc)
+                delta = now - last_online
+                active_days = str(delta.days)
+            
+            # Fetch Demographics
+            age, gender, race = fetch_demographics(first_name)
+            
+            results.append({
+                t["col_phone"]: phone,
+                t["col_uid"]: uid,
+                t["col_username"]: username,
+                t["col_lastseen"]: last_seen,
+                t["col_activedays"]: active_days,
+                t["col_age"]: age,
+                t["col_gender"]: gender,
+                t["col_race"]: race
+            })
+            
+        except Exception as e:
+            results.append({
+                t["col_phone"]: phone,
+                t["col_uid"]: "Not Found",
+                t["col_username"]: "Not Found",
+                t["col_lastseen"]: "-",
+                t["col_activedays"]: "-",
+                t["col_age"]: "-",
+                t["col_gender"]: "-",
+                t["col_race"]: "-"
+            })
+        
+        # Rate Limiting
+        await asyncio.sleep(1.5)
+        progress_bar.progress((i + 1) / len(phone_numbers))
+        
+    await client.disconnect()
+    return results
+
+# --- STREAMLIT UI ---
+st.set_page_config(page_title="Data Enrichment App", layout="wide")
+
+# Sidebar
+language = st.sidebar.radio("Language / 语言", ["English (EN)", "中文 (ZH)"])
+lang_code = "EN" if "EN" in language else "ZH"
+t = LANG[lang_code]
+
+st.sidebar.header(t["sidebar_title"])
+st.sidebar.info("API Keys Configured Internally.")
+
+st.title(t["title"])
+
+# File Upload (TXT only)
+uploaded_file = st.file_uploader(t["upload_label"], type=["txt"])
+
+if uploaded_file is not None:
+    content = uploaded_file.getvalue().decode("utf-8")
+    phone_numbers = extract_phone_numbers(content)
+    
+    st.write(f"Loaded {len(phone_numbers)} numbers.")
+    
+    if st.button(t["process_btn"]):
+        with st.spinner(t["status_processing"]):
+            # Create a new event loop for async Telethon operations
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            final_data = loop.run_until_complete(process_telegram_data(phone_numbers, t))
+            loop.close()
+            
+            if final_data:
+                df = pd.DataFrame(final_data)
+                st.success(t["status_done"])
+                st.dataframe(df)
+                
+                # Export to XLSX
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    df.to_excel(writer, index=False)
+                excel_data = output.getvalue()
+                
+                st.download_button(
+                    label=t["download_btn"],
+                    data=excel_data,
+                    file_name="enriched_data.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
