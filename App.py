@@ -16,7 +16,7 @@ TG_ACCOUNTS = [
     {"session": "session_3", "api_id": 38157740, "api_hash": "cfe91b0b5981caad683e3ea64ac9c81a"}
 ]
 
-WS_INSTANCE_ID = "710722720740" # Update this from Green-API
+WS_INSTANCE_ID = "710722720740"
 WS_API_TOKEN = "2105b56dc221492780d5a4cc427ec212eb50b4865ef948fd9d"
 RAPIDAPI_KEY = "d2c1de7c7emsh6d981d4ffe2441dp1c9aeejsn63e76defa553"
 
@@ -38,16 +38,13 @@ async def check_whatsapp(session, phone):
 
 async def check_truecaller(session, phone):
     clean_num = phone.replace('+', '')
-    # 91 hata kar check karega taaki Truecaller Original Name de
     if clean_num.startswith('91') and len(clean_num) == 12:
         local_num = clean_num[2:]
-        country_code = "in"
     else:
         local_num = clean_num
-        country_code = "us"
         
     url = "https://truecaller-api11.p.rapidapi.com/v2.php"
-    payload = f"phone={local_num}&countryCode={country_code}"
+    payload = f"phone={local_num}&countryCode=in"
     headers = {
         "x-rapidapi-key": RAPIDAPI_KEY,
         "x-rapidapi-host": "truecaller-api11.p.rapidapi.com",
@@ -64,31 +61,28 @@ async def check_truecaller(session, phone):
         pass
     return "Unknown"
 
-async def fetch_demographics(session, first_name):
+async def fetch_demographics(session, first_name, phone):
     if not first_name or first_name == "-" or first_name.lower() == "unknown":
-        return "Unknown", "Unknown", "Unknown"
-    
-    region_map = {"IN": "India", "PK": "Pakistan", "US": "United States", "CN": "China", "GB": "United Kingdom"}
-    fname = first_name.split()[0]
-    try:
-        age_url = f"https://api.agify.io?name={fname}&apikey={AGIFY_KEY}"
-        gen_url = f"https://api.genderize.io?name={fname}&apikey={GENDERIZE_KEY}"
-        race_url = f"https://api.nationalize.io?name={fname}" 
+        age, gender = "Unknown", "Unknown"
+    else:
+        fname = first_name.split()[0]
+        try:
+            age_url = f"https://api.agify.io?name={fname}&apikey={AGIFY_KEY}"
+            gen_url = f"https://api.genderize.io?name={fname}&apikey={GENDERIZE_KEY}"
+            age_req, gen_req = await asyncio.gather(session.get(age_url), session.get(gen_url))
+            age_data, gen_data = await age_req.json(), await gen_req.json()
+            age = age_data.get('age', 'Unknown')
+            gender = gen_data.get('gender', 'Unknown')
+        except:
+            age, gender = "Unknown", "Unknown"
+            
+    # Strict Region Lock for Indian Numbers (+91)
+    if phone.startswith('+91') or phone.startswith('91'):
+        race = "India"
+    else:
+        race = "International"
         
-        age_req, gen_req, race_req = await asyncio.gather(
-            session.get(age_url), session.get(gen_url), session.get(race_url)
-        )
-        
-        age_data, gen_data, race_data = await age_req.json(), await gen_req.json(), await race_req.json()
-        
-        age = age_data.get('age', 'Unknown')
-        gender = gen_data.get('gender', 'Unknown')
-        short_code = race_data['country'][0]['country_id'] if race_data.get('country') else "Unknown"
-        race = region_map.get(short_code, short_code) 
-        
-        return age, gender, race
-    except:
-        return "Unknown", "Unknown", "Unknown"
+    return age, gender, race
 
 async def process_single_number(phone, tg_client, http_session):
     ws_task = asyncio.create_task(check_whatsapp(http_session, phone))
@@ -113,9 +107,8 @@ async def process_single_number(phone, tg_client, http_session):
     ws_status = await ws_task
     tc_name = await tc_task
     
-    # Demographics ke liye accurate naam chune
     target_name_for_api = tc_name if tc_name != "Unknown" else tg_name
-    age, gender, race = await fetch_demographics(http_session, target_name_for_api)
+    age, gender, race = await fetch_demographics(http_session, target_name_for_api, phone)
     
     return {
         "Phone Number": phone,
@@ -131,6 +124,7 @@ async def process_single_number(phone, tg_client, http_session):
         "Target Gender": gender,
         "Race/Region": race
     }
+
 async def main_processor(phone_list, progress_bar):
     clients = []
     for acc in TG_ACCOUNTS:
@@ -140,7 +134,6 @@ async def main_processor(phone_list, progress_bar):
     
     results = []
     async with aiohttp.ClientSession() as http_session:
-        # Processing in Parallel Batches of 3 (Using 3 accounts simultaneously)
         for i in range(0, len(phone_list), 3):
             batch = phone_list[i:i+3]
             tasks = []
@@ -152,22 +145,20 @@ async def main_processor(phone_list, progress_bar):
             results.extend(batch_results)
             
             progress_bar.progress(min((i + 3) / len(phone_list), 1.0))
-            await asyncio.sleep(0.5) # Anti-ban delay between batches
+            await asyncio.sleep(0.5)
             
     for client in clients:
         await client.disconnect()
     return results
 
 # ==========================================
-# 3. STREAMLIT UI (Bilingual & Sidebar)
+# 3. STREAMLIT UI
 # ==========================================
 st.set_page_config(page_title="Pro Data Enrichment", layout="wide")
 
-# Sidebar Configuration
 st.sidebar.title("Settings / 设置")
 lang = st.sidebar.radio("Language / 语言", ["English", "中文"])
 
-# Translations Dictionary
 txt = {
     "title": "Telegram & WhatsApp OSINT Engine" if lang == "English" else "电报与WhatsApp数据丰富引擎",
     "upload": "Upload .txt file with phone numbers" if lang == "English" else "上传带有电话号码的 .txt 文件",
@@ -201,9 +192,8 @@ if uploaded_file is not None:
             
             df = pd.DataFrame(final_data)
             
-            # Apply Strict Age Filter
             if target_age > 0:
-                df['Age_Num'] = pd.to_numeric(df['Age'], errors='coerce')
+                df['Age_Num'] = pd.to_numeric(df['Target Age'], errors='coerce')
                 df = df[df['Age_Num'] == target_age]
                 df = df.drop(columns=['Age_Num'])
             
