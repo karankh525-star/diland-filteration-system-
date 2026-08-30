@@ -18,58 +18,39 @@ TG_ACCOUNTS = [
 
 WS_INSTANCE_ID = "710722720740"
 WS_API_TOKEN = "2105b56dc221492780d5a4cc427ec212eb50b4865ef948fd9d"
-RAPIDAPI_KEY = "d2c1de7c7emsh6d981d4ffe2441dp1c9aeejsn63e76defa553"
-
 AGIFY_KEY = "e6d7d4a5debe860b1078275454db5c8b"
 GENDERIZE_KEY = "0f1bef8f172675dbb5c5be9f1ba1e2cc"
 
 # ==========================================
 # 2. ASYNC FETCH FUNCTIONS
 # ==========================================
-async def check_whatsapp(session, phone):
+async def check_whatsapp_and_name(session, phone):
     clean_num = phone.replace('+', '')
-    url = f"https://7107.api.greenapi.com/waInstance{WS_INSTANCE_ID}/checkWhatsapp/{WS_API_TOKEN}"
-    payload = {"phoneNumber": int(clean_num)}
+    ws_status = "No"
+    ws_name = "Unknown"
+    
+    # Check if number exists on WhatsApp
+    url_check = f"https://7107.api.greenapi.com/waInstance{WS_INSTANCE_ID}/checkWhatsapp/{WS_API_TOKEN}"
     try:
-        async with session.post(url, json=payload) as resp:
+        async with session.post(url_check, json={"phoneNumber": int(clean_num)}) as resp:
             if resp.status == 200:
                 data = await resp.json()
-                return "Yes" if data.get('existsWhatsapp') else "No"
-            return "No"
-    except:
-        return "No"
-
-async def check_truecaller(session, phone):
-    clean_num = phone.replace('+', '')
-    if clean_num.startswith('91') and len(clean_num) == 12:
-        local_num = clean_num[2:]
-    else:
-        local_num = clean_num
-        
-    url = "https://truecaller-api3.p.rapidapi.com/v2.php"
-    # Correct URL-encoded payload format for RapidAPI Truecaller
-    payload = f"phone={local_num}&countryCode=in"
-    headers = {
-        "x-rapidapi-key": RAPIDAPI_KEY,
-        "x-rapidapi-host": "truecaller-api3.p.rapidapi.com",
-        "Content-Type": "application/x-www-form-urlencoded"
-    }
-    try:
-        async with session.post(url, data=payload, headers=headers) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                # Comprehensive parsing for Truecaller JSON structures
-                if 'data' in data and isinstance(data['data'], list) and len(data['data']) > 0:
-                    return data['data'][0].get('name', 'Unknown')
-                elif 'truecaller_lookup' in data:
-                    tc = data['truecaller_lookup']
-                    if 'data' in tc and len(tc['data']) > 0:
-                        return tc['data'][0].get('name', 'Unknown')
-                elif 'name' in data:
-                    return data.get('name', 'Unknown')
+                ws_status = "Yes" if data.get('existsWhatsapp') else "No"
     except:
         pass
-    return "Unknown"
+
+    # Fetch WhatsApp Profile Name if Active
+    if ws_status == "Yes":
+        url_info = f"https://7107.api.greenapi.com/waInstance{WS_INSTANCE_ID}/getContactInfo/{WS_API_TOKEN}"
+        try:
+            async with session.post(url_info, json={"chatId": f"{clean_num}@c.us"}) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    ws_name = data.get('name', 'Unknown')
+        except:
+            pass
+            
+    return ws_status, ws_name
 
 async def fetch_demographics(session, first_name, phone):
     if not first_name or first_name == "-" or first_name.lower() == "unknown":
@@ -95,8 +76,7 @@ async def fetch_demographics(session, first_name, phone):
     return age, gender, race
 
 async def process_single_number(phone, tg_client, http_session):
-    ws_task = asyncio.create_task(check_whatsapp(http_session, phone))
-    tc_task = asyncio.create_task(check_truecaller(http_session, phone))
+    ws_task = asyncio.create_task(check_whatsapp_and_name(http_session, phone))
     
     uid, username, tg_status, tg_last_seen, active_days, tg_name = "Not Found", "Not Found", "Not Available", "-", "-", "-"
     
@@ -114,23 +94,22 @@ async def process_single_number(phone, tg_client, http_session):
     except:
         pass
 
-    ws_status = await ws_task
-    tc_name = await tc_task
+    ws_status, ws_name = await ws_task
     
-    # Priority: Truecaller Real Name -> Fallback to Telegram Name
-    final_name = tc_name if tc_name != "Unknown" else tg_name
+    # Priority for Demographics: WhatsApp Profile Name -> Telegram Name
+    final_name = ws_name if ws_name != "Unknown" and ws_name != "" else tg_name
     age, gender, race = await fetch_demographics(http_session, final_name, phone)
     
     return {
         "Phone Number": phone,
-        "Truecaller Real Name": tc_name,
+        "WhatsApp Name": ws_name,
+        "WhatsApp Status": ws_status,
         "Telegram Name": tg_name,
         "Telegram Username": username,
         "Telegram Status": tg_status,
         "TG UID": uid,
         "TG Last Seen": tg_last_seen,
         "TG Active Days": active_days,
-        "WhatsApp Status": ws_status,
         "Target Age": age,
         "Target Gender": gender,
         "Race/Region": race
@@ -145,8 +124,9 @@ async def main_processor(phone_list, progress_bar):
     
     results = []
     async with aiohttp.ClientSession() as http_session:
-        for i in range(0, len(phone_list), 3):
-            batch = phone_list[i:i+3]
+        # Increased Batch Size for 2x Speed
+        for i in range(0, len(phone_list), 6):
+            batch = phone_list[i:i+6]
             tasks = []
             for j, phone in enumerate(batch):
                 active_client = clients[j % len(clients)]
@@ -155,8 +135,8 @@ async def main_processor(phone_list, progress_bar):
             batch_results = await asyncio.gather(*tasks)
             results.extend(batch_results)
             
-            progress_bar.progress(min((i + 3) / len(phone_list), 1.0))
-            await asyncio.sleep(0.3)
+            progress_bar.progress(min((i + 6) / len(phone_list), 1.0))
+            await asyncio.sleep(0.1) # Reduced delay for max speed
             
     for client in clients:
         await client.disconnect()
@@ -208,7 +188,7 @@ if uploaded_file is not None:
                 df = df[df['Age_Num'] == target_age]
                 df = df.drop(columns=['Age_Num'])
             
-            st.success(txt["success"]) 
+            st.success(txt["success"])
             st.dataframe(df)
             
             output = io.BytesIO()
