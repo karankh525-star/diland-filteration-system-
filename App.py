@@ -22,7 +22,6 @@ TG_ACCOUNTS = [
 WS_INSTANCE_ID = "710722720740"
 WS_API_TOKEN = "2105b56dc221492780d5a4cc427ec212eb50b4865ef948fd9d"
 
-# Master Key for all RapidAPI endpoints
 RAPIDAPI_KEY = "d2c1de7c7emsh6d981d4ffe2441dp1c9aeejsn63e76defa553"
 AGIFY_KEY = "e6d7d4a5debe860b1078275454db5c8b"
 GENDERIZE_KEY = "0f1bef8f172675dbb5c5be9f1ba1e2cc"
@@ -32,7 +31,6 @@ GENDERIZE_KEY = "0f1bef8f172675dbb5c5be9f1ba1e2cc"
 # ==========================================
 async def fetch_api(session, url, headers, params=None, data=None, method="GET"):
     try:
-        # Strict timeout to maintain fast processing speed
         if method == "GET":
             async with session.get(url, headers=headers, params=params, timeout=4) as resp:
                 return await resp.json() if resp.status == 200 else None
@@ -43,9 +41,7 @@ async def fetch_api(session, url, headers, params=None, data=None, method="GET")
         return None
 
 async def check_all_caller_ids(session, phone):
-    """Fires all RapidAPI OSINT endpoints simultaneously."""
     clean_num = phone.replace('+', '')
-    
     if clean_num.startswith('91'):
         cc, local_num = 'in', clean_num[2:]
     elif clean_num.startswith('1'):
@@ -67,10 +63,8 @@ async def check_all_caller_ids(session, phone):
     h_kyb = {**base_headers, "x-rapidapi-host": "know-your-business.p.rapidapi.com"}
     t_kyb = fetch_api(session, "https://know-your-business.p.rapidapi.com/", h_kyb, params={"phone": clean_num})
     
-    # Run all APIs concurrently
     results = await asyncio.gather(t_sync, t_eye, t_tc, t_kyb, return_exceptions=True)
     
-    # Extract the best valid name
     for res in results:
         if isinstance(res, dict):
             if 'name' in res and res['name'] and str(res['name']).lower() not in ["unknown", "", "none"]:
@@ -106,12 +100,16 @@ async def check_whatsapp_data(session, phone):
     return ws_status, ws_name
 
 async def fetch_demographics(session, final_name, phone):
-    invalid_names = ["unknown", "-", "", "hidden (privacy)", "target user"]
+    invalid_names = ["unknown", "-", "", "hidden (privacy)", "target user", "none"]
     if not final_name or str(final_name).lower().strip() in invalid_names:
         return "Unknown", "Unknown", "US/Intl" if not phone.startswith('+91') else "India"
     
-    clean_fname = re.sub(r'[^\w\s]', '', final_name).strip().split()[0]
-    if not clean_fname:
+    # Clean the name (helpful if it came from a username like @John_Doe123)
+    # This keeps only alphabet characters, removes numbers and special symbols
+    clean_fname = re.sub(r'[^a-zA-Z]', ' ', final_name).strip()
+    clean_fname = clean_fname.split()[0] if clean_fname else ""
+    
+    if not clean_fname or len(clean_fname) < 2:
         return "Unknown", "Unknown", "US/Intl" if not phone.startswith('+91') else "India"
         
     try:
@@ -136,7 +134,6 @@ async def process_single_number(phone, tg_client, http_session):
     uid, username, tg_status, tg_last_seen, active_days, tg_name = "Not Found", "Not Found", "Not Available", "-", "-", "-"
     
     try:
-        # TELEGRAM GHOST SYNC (Bypass Privacy with Random Client ID)
         rand_client_id = random.randint(10000, 999999)
         contact = InputPhoneContact(client_id=rand_client_id, phone=phone, first_name="Target", last_name="User")
         result = await tg_client(ImportContactsRequest([contact]))
@@ -147,7 +144,6 @@ async def process_single_number(phone, tg_client, http_session):
             uid = str(user.id)
             username = f"@{user.username}" if user.username else "None"
             
-            # Privacy Name Handle Bug Fix
             fetched_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
             if fetched_name.lower() == "target user":
                 tg_name = "Hidden (Privacy)"
@@ -159,21 +155,29 @@ async def process_single_number(phone, tg_client, http_session):
                 tg_last_seen = last_online.strftime('%Y-%m-%d')
                 active_days = str((datetime.now(timezone.utc) - last_online).days)
                 
-            # Instant Delete (No Traces Left)
             await tg_client(DeleteContactsRequest(id=[user.id]))
     except Exception as e:
-        print(f"TG Error {phone}: {e}") # Prints error in console if blocked
+        print(f"TG Error {phone}: {e}")
 
     ws_status, ws_name = await ws_task
     caller_name = await caller_task
     
-    # Smart Fallback logic: 14-API Name -> WhatsApp Name -> Telegram Name
-    final_name = caller_name if caller_name != "Unknown" else (ws_name if ws_name not in ["Unknown", ""] else tg_name)
+    # ---------------------------------------------------------
+    # SMART DEMOGRAPHICS NAME SELECTION (Including Username!)
+    # ---------------------------------------------------------
+    demo_name = "Unknown"
     
-    if final_name in ["Hidden (Privacy)", "-", ""]:
-        final_name = "Unknown"
+    if caller_name not in ["Unknown", "", "-"]:
+        demo_name = caller_name
+    elif ws_name not in ["Unknown", "", "-"]:
+        demo_name = ws_name
+    elif tg_name not in ["Hidden (Privacy)", "-", "", "Unknown"]:
+        demo_name = tg_name
+    elif username not in ["None", "Not Found", "-", ""]:
+        # If everything else fails, use the Telegram Username for Age/Gender calculation!
+        demo_name = username
         
-    age, gender, race = await fetch_demographics(http_session, final_name, phone)
+    age, gender, race = await fetch_demographics(http_session, demo_name, phone)
     
     return {
         "Phone Number": phone,
@@ -198,7 +202,6 @@ async def main_processor(phone_list, progress_bar):
     
     results = []
     async with aiohttp.ClientSession() as http_session:
-        # Fast Batch Processing
         for i in range(0, len(phone_list), 6):
             batch = phone_list[i:i+6]
             tasks = [process_single_number(phone, clients[j % len(clients)], http_session) for j, phone in enumerate(batch)]
@@ -222,7 +225,7 @@ st.sidebar.markdown("""
 - **OSINT APIs:** 7 Active
 - **Demo APIs:** 2 Active
 - **Total Power:** 14 APIs Parallel
-- **Bypass:** TG Ghost Sync ON
+- **Smart Logic:** Username to Demographics AI ON
 """)
 
 st.title("Ultimate Telegram & WhatsApp OSINT Engine")
@@ -236,7 +239,7 @@ if uploaded_file is not None:
     st.write(f'Loaded unique numbers: **{len(phone_numbers)}**')
     
     if st.button("Start Processing"):
-        with st.spinner("Firing 14 Engines Concurrently... (TG Bypass Active)"):
+        with st.spinner("Firing 14 Engines Concurrently... (AI Username Parsing Active)"):
             progress_bar = st.progress(0)
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
