@@ -109,17 +109,17 @@ async def process_single_number(phone, tg_client, http_session):
     age, gender, race = await fetch_demographics(http_session, target_name)
     
     return {
-        "Phone": phone,
+        "Phone Number": phone,
         "Name": target_name,
-        "TG Status": tg_status,
+        "Telegram (Active/Invalid)": tg_status,
         "TG UID": uid,
         "TG Username": username,
-        "Last Seen": tg_last_seen,
-        "Active Days": active_days,
-        "WS Status": ws_status,
-        "Age": age,
-        "Gender": gender,
-        "Race": race
+        "TG Last Seen": tg_last_seen,
+        "TG Active Days": active_days,
+        "WhatsApp (Yes/No)": ws_status,
+        "Target Age": age,
+        "Target Gender": gender,
+        "Race/Region": race
     }
 
 async def main_processor(phone_list, progress_bar):
