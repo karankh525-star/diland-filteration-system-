@@ -30,14 +30,18 @@ GENDERIZE_KEY = "0f1bef8f172675dbb5c5be9f1ba1e2cc"
 # 2. RAPID-FIRE SIMULTANEOUS API FETCHER
 # ==========================================
 async def fetch_api(session, url, headers, params=None, data=None, method="GET"):
+    endpoint = url.split('/')[-1] if url.split('/')[-1] else url.split('/')[-2]
     try:
         if method == "GET":
-            async with session.get(url, headers=headers, params=params, timeout=4) as resp:
+            async with session.get(url, headers=headers, params=params, timeout=5) as resp:
+                if resp.status != 200: print(f"API Blocked ({resp.status}) on {endpoint}")
                 return await resp.json() if resp.status == 200 else None
         else:
-            async with session.post(url, headers=headers, data=data, timeout=4) as resp:
+            async with session.post(url, headers=headers, data=data, timeout=5) as resp:
+                if resp.status != 200: print(f"API Blocked ({resp.status}) on {endpoint}")
                 return await resp.json() if resp.status == 200 else None
-    except:
+    except Exception as e:
+        print(f"Timeout/Error on {endpoint}")
         return None
 
 async def check_all_caller_ids(session, phone):
@@ -75,24 +79,20 @@ async def check_all_caller_ids(session, phone):
                 return res['truecaller_lookup']['data'][0].get('name', 'Unknown')
         elif isinstance(res, list) and len(res) > 0 and isinstance(res[0], dict) and 'name' in res[0]:
             return res[0]['name']
-
     return "Unknown"
 
 async def check_whatsapp_data(session, phone):
     clean_num = phone.replace('+', '')
     ws_status, ws_name = "No", "Unknown"
-    
     try:
         async with session.post(f"https://7107.api.greenapi.com/waInstance{WS_INSTANCE_ID}/checkWhatsapp/{WS_API_TOKEN}", json={"phoneNumber": int(clean_num)}) as resp:
             if resp.status == 200:
-                data = await resp.json()
-                ws_status = "Yes" if data.get('existsWhatsapp') else "No"
+                ws_status = "Yes" if (await resp.json()).get('existsWhatsapp') else "No"
                 
         if ws_status == "Yes":
             async with session.post(f"https://7107.api.greenapi.com/waInstance{WS_INSTANCE_ID}/getContactInfo/{WS_API_TOKEN}", json={"chatId": f"{clean_num}@c.us"}) as resp:
                 if resp.status == 200:
-                    data = await resp.json()
-                    fetched_name = data.get('name', 'Unknown')
+                    fetched_name = (await resp.json()).get('name', 'Unknown')
                     if fetched_name and str(fetched_name).strip() != "":
                         ws_name = fetched_name
     except:
@@ -100,17 +100,17 @@ async def check_whatsapp_data(session, phone):
     return ws_status, ws_name
 
 async def fetch_demographics(session, final_name, phone):
-    invalid_names = ["unknown", "-", "", "hidden (privacy)", "target user", "none"]
-    if not final_name or str(final_name).lower().strip() in invalid_names:
-        return "Unknown", "Unknown", "US/Intl" if not phone.startswith('+91') else "India"
+    # Strict filter to prevent fake data generation
+    invalid_names = ["unknown", "-", "", "none", "hidden", "privacy", "target user", "target", "user", "admin", "null"]
+    if not final_name or any(inv in str(final_name).lower() for inv in invalid_names):
+        return "Unknown", "Unknown", "India" if phone.startswith('+91') else "US/Intl"
     
-    # Clean the name (helpful if it came from a username like @John_Doe123)
-    # This keeps only alphabet characters, removes numbers and special symbols
+    # ADVANCED SANITIZER: Keeps only pure alphabets for highly accurate Age/Gender match
     clean_fname = re.sub(r'[^a-zA-Z]', ' ', final_name).strip()
     clean_fname = clean_fname.split()[0] if clean_fname else ""
     
-    if not clean_fname or len(clean_fname) < 2:
-        return "Unknown", "Unknown", "US/Intl" if not phone.startswith('+91') else "India"
+    if len(clean_fname) < 2:
+        return "Unknown", "Unknown", "India" if phone.startswith('+91') else "US/Intl"
         
     try:
         age_req, gen_req = await asyncio.gather(
@@ -134,6 +134,7 @@ async def process_single_number(phone, tg_client, http_session):
     uid, username, tg_status, tg_last_seen, active_days, tg_name = "Not Found", "Not Found", "Not Available", "-", "-", "-"
     
     try:
+        # TELEGRAM GHOST SYNC (Bypass Privacy with Random Client ID)
         rand_client_id = random.randint(10000, 999999)
         contact = InputPhoneContact(client_id=rand_client_id, phone=phone, first_name="Target", last_name="User")
         result = await tg_client(ImportContactsRequest([contact]))
@@ -144,6 +145,7 @@ async def process_single_number(phone, tg_client, http_session):
             uid = str(user.id)
             username = f"@{user.username}" if user.username else "None"
             
+            # Privacy Handling
             fetched_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
             if fetched_name.lower() == "target user":
                 tg_name = "Hidden (Privacy)"
@@ -155,6 +157,7 @@ async def process_single_number(phone, tg_client, http_session):
                 tg_last_seen = last_online.strftime('%Y-%m-%d')
                 active_days = str((datetime.now(timezone.utc) - last_online).days)
                 
+            # Instant Delete (No Traces Left)
             await tg_client(DeleteContactsRequest(id=[user.id]))
     except Exception as e:
         print(f"TG Error {phone}: {e}")
@@ -163,19 +166,13 @@ async def process_single_number(phone, tg_client, http_session):
     caller_name = await caller_task
     
     # ---------------------------------------------------------
-    # SMART DEMOGRAPHICS NAME SELECTION (Including Username!)
+    # SMART DEMOGRAPHICS NAME SELECTION (Waterfall Logic)
     # ---------------------------------------------------------
     demo_name = "Unknown"
-    
-    if caller_name not in ["Unknown", "", "-"]:
-        demo_name = caller_name
-    elif ws_name not in ["Unknown", "", "-"]:
-        demo_name = ws_name
-    elif tg_name not in ["Hidden (Privacy)", "-", "", "Unknown"]:
-        demo_name = tg_name
-    elif username not in ["None", "Not Found", "-", ""]:
-        # If everything else fails, use the Telegram Username for Age/Gender calculation!
-        demo_name = username
+    if caller_name not in ["Unknown", "", "-"]: demo_name = caller_name
+    elif ws_name not in ["Unknown", "", "-"]: demo_name = ws_name
+    elif tg_name not in ["Hidden (Privacy)", "-", "", "Unknown"]: demo_name = tg_name
+    elif username not in ["None", "Not Found", "-", ""]: demo_name = username
         
     age, gender, race = await fetch_demographics(http_session, demo_name, phone)
     
@@ -214,32 +211,43 @@ async def main_processor(phone_list, progress_bar):
     return results
 
 # ==========================================
-# 4. STREAMLIT UI
+# 4. STREAMLIT UI (Multilingual + Age Filter)
 # ==========================================
 st.set_page_config(page_title="Ultimate OSINT Engine", layout="wide")
 
-st.sidebar.title("System Specs 🚀")
-st.sidebar.markdown("""
-- **TG Engines:** 3 Active (Rotation)
-- **WA Engines:** 2 Active
-- **OSINT APIs:** 7 Active
-- **Demo APIs:** 2 Active
-- **Total Power:** 14 APIs Parallel
-- **Smart Logic:** Username to Demographics AI ON
-""")
+st.sidebar.title("Settings / 设置")
+lang = st.sidebar.radio("Language / 语言", ["English", "中文"])
 
-st.title("Ultimate Telegram & WhatsApp OSINT Engine")
+# Multilingual Dictionary
+txt = {
+    "title": "Ultimate OSINT Engine (14-API)" if lang == "English" else "终极开源情报引擎 (14-API)",
+    "specs": "System Specs 🚀" if lang == "English" else "系统规格 🚀",
+    "upload": "Upload .txt file with phone numbers" if lang == "English" else "上传带有电话号码的 .txt 文件",
+    "filter": "Filter by Target Age (0 = Show All)" if lang == "English" else "按目标年龄过滤（0 = 显示全部）",
+    "loaded": "Loaded unique numbers: " if lang == "English" else "已加载唯一号码: ",
+    "btn": "Start Processing" if lang == "English" else "开始处理",
+    "processing": "Firing 14 Engines Concurrently... (TG Bypass & AI Age Tracker ON)" if lang == "English" else "正在并行启动14个引擎... (开启TG绕过与AI年龄追踪)",
+    "success": "Processing Complete!" if lang == "English" else "处理完成！",
+    "download": "Download Excel (.xlsx)" if lang == "English" else "下载 Excel (.xlsx)",
+    "no_data": "No records found for the selected age." if lang == "English" else "未找到符合所选年龄的记录。"
+}
+
+st.sidebar.markdown(f"**{txt['specs']}**\n- **TG Engines:** 3 Active (Rotation)\n- **WA Engines:** 2 Active\n- **OSINT APIs:** 7 Active\n- **Demo APIs:** 2 Active\n- **Total Power:** 14 APIs Parallel")
+
+st.title(txt["title"])
 st.write("---")
 
-uploaded_file = st.file_uploader("Upload .txt file with phone numbers", type=["txt"])
+target_age = st.sidebar.number_input(txt["filter"], min_value=0, max_value=120, value=0)
+
+uploaded_file = st.file_uploader(txt["upload"], type=["txt"])
 
 if uploaded_file is not None:
     content = uploaded_file.getvalue().decode("utf-8")
     phone_numbers = list(set(["+" + re.sub(r'\D', '', num) for num in content.split('\n') if re.sub(r'\D', '', num)]))
-    st.write(f'Loaded unique numbers: **{len(phone_numbers)}**')
+    st.write(f'{txt["loaded"]} **{len(phone_numbers)}**')
     
-    if st.button("Start Processing"):
-        with st.spinner("Firing 14 Engines Concurrently... (AI Username Parsing Active)"):
+    if st.button(txt["btn"]):
+        with st.spinner(txt["processing"]):
             progress_bar = st.progress(0)
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
@@ -247,11 +255,20 @@ if uploaded_file is not None:
             loop.close()
             
             df = pd.DataFrame(final_data)
-            st.success("Processing Complete!")
-            st.dataframe(df)
             
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df.to_excel(writer, index=False)
+            # AGE FILTER LOGIC
+            if target_age > 0:
+                df['Age_Num'] = pd.to_numeric(df['Target Age'], errors='coerce')
+                df = df[df['Age_Num'] == target_age]
+                df = df.drop(columns=['Age_Num'])
             
-            st.download_button("Download Excel (.xlsx)", data=output.getvalue(), file_name="BugFree_Master_Results.xlsx")
+            st.success(txt["success"])
+            
+            if df.empty:
+                st.warning(txt["no_data"])
+            else:
+                st.dataframe(df)
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    df.to_excel(writer, index=False)
+                st.download_button(txt["download"], data=output.getvalue(), file_name="Master_OSINT_Results.xlsx")
