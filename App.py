@@ -2,194 +2,207 @@ import streamlit as st
 import pandas as pd
 import re
 import asyncio
-import requests
-from datetime import datetime, timezone
+import aiohttp
 import io
+from datetime import datetime, timezone
 from telethon import TelegramClient
-from telethon.errors import SessionPasswordNeededError
 
-# --- API CREDENTIALS ---
-API_ID = 32862363
-API_HASH = "73ac9de4fbf7087e99a6ce9b0d46e25f"
+# ==========================================
+# 1. API CREDENTIALS
+# ==========================================
+TG_ACCOUNTS = [
+    {"session": "session_1", "api_id": 32862363, "api_hash": "73ac9de4fbf7087e99a6ce9b0d46e25f"},
+    {"session": "session_2", "api_id": 31332666, "api_hash": "fb8afbc22c281655f262d1f8ee09a917"},
+    {"session": "session_3", "api_id": 38157740, "api_hash": "cfe91b0b5981caad683e3ea64ac9c81a"}
+]
+
+WS_INSTANCE_ID = "710722720740" # Update this from Green-API
+WS_API_TOKEN = "2105b56dc221492780d5a4cc427ec212eb50b4865ef948fd9d"
+RAPIDAPI_KEY = "d2c1de7c7emsh6d981d4ffe2441dp1c9aeejsn63e76defa553"
+
 AGIFY_KEY = "e6d7d4a5debe860b1078275454db5c8b"
 GENDERIZE_KEY = "0f1bef8f172675dbb5c5be9f1ba1e2cc"
 
-# --- LANGUAGE TRANSLATIONS ---
-LANG = {
-    "EN": {
-        "title": "Telegram Data Enrichment",
-        "sidebar_title": "Settings",
-        "upload_label": "Upload .txt file with phone numbers",
-        "process_btn": "Start Processing",
-        "download_btn": "Download Excel (.xlsx)",
-        "status_processing": "Processing numbers... Please wait.",
-        "status_done": "Processing Complete!",
-        "error_file": "Please upload a valid .txt file.",
-        "col_phone": "Phone", "col_uid": "UID", "col_username": "Username",
-        "col_lastseen": "Last Seen", "col_activedays": "Active Days",
-        "col_age": "Age", "col_gender": "Gender", "col_race": "Origin/Race"
-    },
-    "ZH": {
-        "title": "Telegram 数据丰富化",
-        "sidebar_title": "设置",
-        "upload_label": "上传包含电话号码的 .txt 文件",
-        "process_btn": "开始处理",
-        "download_btn": "下载 Excel (.xlsx)",
-        "status_processing": "正在处理号码... 请稍候。",
-        "status_done": "处理完成！",
-        "error_file": "请上传有效的 .txt 文件。",
-        "col_phone": "电话", "col_uid": "用户ID", "col_username": "用户名",
-        "col_lastseen": "最后在线", "col_activedays": "活跃天数",
-        "col_age": "年龄", "col_gender": "性别", "col_race": "来源/种族"
+# ==========================================
+# 2. ASYNC FETCH FUNCTIONS
+# ==========================================
+async def check_whatsapp(session, phone):
+    clean_num = phone.replace('+', '')
+    url = f"https://api.green-api.com/waInstance{WS_INSTANCE_ID}/checkWhatsapp/{WS_API_TOKEN}"
+    try:
+        async with session.post(url, json={"phoneNumber": clean_num}) as resp:
+            data = await resp.json()
+            return "Yes" if data.get('existsWhatsapp') else "No"
+    except:
+        return "Error"
+
+async def check_truecaller(session, phone):
+    clean_num = phone.replace('+', '')
+    url = "https://truecaller-api11.p.rapidapi.com/v2.php"
+    payload = f"phone={clean_num}&countryCode=in" 
+    headers = {
+        "x-rapidapi-key": RAPIDAPI_KEY,
+        "x-rapidapi-host": "truecaller-api11.p.rapidapi.com",
+        "Content-Type": "application/x-www-form-urlencoded"
     }
-}
+    try:
+        async with session.post(url, data=payload, headers=headers) as resp:
+            data = await resp.json()
+            if 'data' in data and len(data['data']) > 0:
+                return data['data'][0].get('name', 'Unknown')
+    except:
+        pass
+    return "Unknown"
 
-# --- HELPER FUNCTIONS ---
-def extract_phone_numbers(text):
-    """Extracts and cleans international phone numbers from text."""
-    raw_numbers = text.split('\n')
-    cleaned = []
-    for num in raw_numbers:
-        clean_num = re.sub(r'\D', '', num)
-        if clean_num:
-            cleaned.append("+" + clean_num)
-    return list(set(cleaned))
-
-def fetch_demographics(first_name):
-    """Fetches Age, Gender, and Race from external APIs."""
-    if not first_name:
+async def fetch_demographics(session, first_name):
+    if not first_name or first_name == "-" or first_name.lower() == "unknown":
         return "Unknown", "Unknown", "Unknown"
     
-    age, gender, race = "Unknown", "Unknown", "Unknown"
+    fname = first_name.split()[0]
+    try:
+        age_url = f"https://api.agify.io?name={fname}&apikey={AGIFY_KEY}"
+        gen_url = f"https://api.genderize.io?name={fname}&apikey={GENDERIZE_KEY}"
+        race_url = f"https://api.nationalize.io?name={fname}" # Free Race/Ethnicity API
+        
+        age_req, gen_req, race_req = await asyncio.gather(
+            session.get(age_url), session.get(gen_url), session.get(race_url)
+        )
+        
+        age_data = await age_req.json()
+        gen_data = await gen_req.json()
+        race_data = await race_req.json()
+        
+        age = age_data.get('age', 'Unknown')
+        gender = gen_data.get('gender', 'Unknown')
+        race = race_data['country'][0]['country_id'] if race_data.get('country') else "Unknown"
+        
+        return age, gender, race
+    except:
+        return "Unknown", "Unknown", "Unknown"
+
+async def process_single_number(phone, tg_client, http_session):
+    # Parallel Requests
+    ws_task = asyncio.create_task(check_whatsapp(http_session, phone))
+    tc_task = asyncio.create_task(check_truecaller(http_session, phone))
+    
+    uid, username, tg_status, tg_last_seen, active_days = "Not Found", "Not Found", "Invalid", "-", "-"
+    tg_name = "-"
     
     try:
-        # Age
-        res_age = requests.get(f"https://api.agify.io?name={first_name}&apikey={AGIFY_KEY}").json()
-        age = res_age.get('age', 'Unknown')
+        user = await tg_client.get_entity(phone)
+        tg_status = "Active"
+        uid = str(user.id)
+        username = f"@{user.username}" if user.username else "None"
+        tg_name = user.first_name if user.first_name else "-"
         
-        # Gender
-        res_gen = requests.get(f"https://api.genderize.io?name={first_name}&apikey={GENDERIZE_KEY}").json()
-        gender = res_gen.get('gender', 'Unknown')
-        
-        # Race/Nationality
-        res_nat = requests.get(f"https://api.nationalize.io?name={first_name}").json()
-        if res_nat.get('country') and len(res_nat['country']) > 0:
-            race = res_nat['country'][0]['country_id']
-            
-    except Exception as e:
-        pass
-        
-    return age, gender, race
+        if hasattr(user.status, 'was_online') and user.status.was_online:
+            last_online = user.status.was_online
+            tg_last_seen = last_online.strftime('%Y-%m-%d')
+            active_days = str((datetime.now(timezone.utc) - last_online).days)
+    except:
+        pass # Not on Telegram -> Remains 'Invalid'
 
-async def process_telegram_data(phone_numbers, t):
-    """Connects to Telegram via Telethon and processes numbers."""
-    client = TelegramClient('session_name', API_ID, API_HASH)
-    await client.connect()
+    ws_status = await ws_task
+    tc_name = await tc_task
     
-    if not await client.is_user_authorized():
-        st.error("Telegram session not authorized. Please run locally first to authenticate via OTP.")
-        return []
+    target_name = tc_name if tc_name != "Unknown" else tg_name
+    age, gender, race = await fetch_demographics(http_session, target_name)
+    
+    return {
+        "Phone": phone,
+        "Name": target_name,
+        "TG Status": tg_status,
+        "TG UID": uid,
+        "TG Username": username,
+        "Last Seen": tg_last_seen,
+        "Active Days": active_days,
+        "WS Status": ws_status,
+        "Age": age,
+        "Gender": gender,
+        "Race": race
+    }
 
+async def main_processor(phone_list, progress_bar):
+    clients = []
+    for acc in TG_ACCOUNTS:
+        client = TelegramClient(acc['session'], acc['api_id'], acc['api_hash'])
+        await client.connect()
+        clients.append(client)
+    
     results = []
-    progress_bar = st.progress(0)
-    
-    for i, phone in enumerate(phone_numbers):
-        try:
-            user = await client.get_entity(phone)
+    async with aiohttp.ClientSession() as http_session:
+        # Processing in Parallel Batches of 3 (Using 3 accounts simultaneously)
+        for i in range(0, len(phone_list), 3):
+            batch = phone_list[i:i+3]
+            tasks = []
+            for j, phone in enumerate(batch):
+                active_client = clients[j % len(clients)]
+                tasks.append(process_single_number(phone, active_client, http_session))
             
-            uid = user.id
-            username = user.username if user.username else "None"
-            first_name = user.first_name if user.first_name else ""
+            batch_results = await asyncio.gather(*tasks)
+            results.extend(batch_results)
             
-            # Calculate Last Seen & Active Days
-            last_seen = "Hidden/Unknown"
-            active_days = "Unknown"
+            progress_bar.progress(min((i + 3) / len(phone_list), 1.0))
+            await asyncio.sleep(0.5) # Anti-ban delay between batches
             
-            if hasattr(user.status, 'was_online'):
-                last_online = user.status.was_online
-                last_seen = last_online.strftime('%Y-%m-%d %H:%M:%S')
-                now = datetime.now(timezone.utc)
-                delta = now - last_online
-                active_days = str(delta.days)
-            
-            # Fetch Demographics
-            age, gender, race = fetch_demographics(first_name)
-            
-            results.append({
-                t["col_phone"]: phone,
-                t["col_uid"]: uid,
-                t["col_username"]: username,
-                t["col_lastseen"]: last_seen,
-                t["col_activedays"]: active_days,
-                t["col_age"]: age,
-                t["col_gender"]: gender,
-                t["col_race"]: race
-            })
-            
-        except Exception as e:
-            results.append({
-                t["col_phone"]: phone,
-                t["col_uid"]: "Not Found",
-                t["col_username"]: "Not Found",
-                t["col_lastseen"]: "-",
-                t["col_activedays"]: "-",
-                t["col_age"]: "-",
-                t["col_gender"]: "-",
-                t["col_race"]: "-"
-            })
-        
-        # Rate Limiting
-        await asyncio.sleep(0.5)
-        progress_bar.progress((i + 1) / len(phone_numbers))
-        
-    await client.disconnect()
+    for client in clients:
+        await client.disconnect()
     return results
 
-# --- STREAMLIT UI ---
-st.set_page_config(page_title="Data Enrichment App", layout="wide")
+# ==========================================
+# 3. STREAMLIT UI (Bilingual & Sidebar)
+# ==========================================
+st.set_page_config(page_title="Pro Data Enrichment", layout="wide")
 
-# Sidebar
-language = st.sidebar.radio("Language / 语言", ["English (EN)", "中文 (ZH)"])
-lang_code = "EN" if "EN" in language else "ZH"
-t = LANG[lang_code]
+# Sidebar Configuration
+st.sidebar.title("Settings / 设置")
+lang = st.sidebar.radio("Language / 语言", ["English", "中文"])
 
-st.sidebar.header(t["sidebar_title"])
-st.sidebar.info("API Keys Configured Internally.")
+# Translations Dictionary
+txt = {
+    "title": "Telegram & WhatsApp OSINT Engine" if lang == "English" else "电报与WhatsApp数据丰富引擎",
+    "upload": "Upload .txt file with phone numbers" if lang == "English" else "上传带有电话号码的 .txt 文件",
+    "filter": "Filter by Target Age (0 = Show All)" if lang == "English" else "按目标年龄过滤（0 = 显示全部）",
+    "loaded": "Loaded unique numbers: " if lang == "English" else "已加载唯一号码: ",
+    "btn": "Start Processing" if lang == "English" else "开始处理",
+    "processing": "Processing with 3 Engines in Parallel..." if lang == "English" else "正在使用3个引擎并行处理...",
+    "success": "Processing Complete!" if lang == "English" else "处理完成！",
+    "download": "Download Excel (.xlsx)" if lang == "English" else "下载 Excel (.xlsx)"
+}
 
-st.title(t["title"])
+st.title(txt["title"])
+st.sidebar.write("---")
+target_age = st.sidebar.number_input(txt["filter"], min_value=0, max_value=120, value=0)
 
-# File Upload (TXT only)
-uploaded_file = st.file_uploader(t["upload_label"], type=["txt"])
+uploaded_file = st.file_uploader(txt["upload"], type=["txt"])
 
 if uploaded_file is not None:
     content = uploaded_file.getvalue().decode("utf-8")
-    phone_numbers = extract_phone_numbers(content)
+    phone_numbers = list(set(["+" + re.sub(r'\D', '', num) for num in content.split('\n') if re.sub(r'\D', '', num)]))
+    st.write(f'{txt["loaded"]} **{len(phone_numbers)}**')
     
-    st.write(f"Loaded {len(phone_numbers)} numbers.")
-    
-    if st.button(t["process_btn"]):
-        with st.spinner(t["status_processing"]):
-            # Create a new event loop for async Telethon operations
+    if st.button(txt["btn"]):
+        with st.spinner(txt["processing"]):
+            progress_bar = st.progress(0)
+            
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            
-            final_data = loop.run_until_complete(process_telegram_data(phone_numbers, t))
+            final_data = loop.run_until_complete(main_processor(phone_numbers, progress_bar))
             loop.close()
             
-            if final_data:
-                df = pd.DataFrame(final_data)
-                st.success(t["status_done"])
-                st.dataframe(df)
-                
-                # Export to XLSX
-                output = io.BytesIO()
-                with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                    df.to_excel(writer, index=False)
-                excel_data = output.getvalue()
-                
-                st.download_button(
-                    label=t["download_btn"],
-                    data=excel_data,
-                    file_name="enriched_data.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+            df = pd.DataFrame(final_data)
+            
+            # Apply Strict Age Filter
+            if target_age > 0:
+                df['Age_Num'] = pd.to_numeric(df['Age'], errors='coerce')
+                df = df[df['Age_Num'] == target_age]
+                df = df.drop(columns=['Age_Num'])
+            
+            st.success(txt["success"])
+            st.dataframe(df)
+            
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                df.to_excel(writer, index=False)
+            
+            st.download_button(txt["download"], data=output.getvalue(), file_name="Advanced_OSINT_Results.xlsx")
