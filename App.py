@@ -46,9 +46,8 @@ async def check_truecaller(session, phone):
     else:
         local_num = clean_num
         
-    # Updated Correct Endpoint from your screenshot
     url = "https://truecaller-api3.p.rapidapi.com/v2.php"
-    payload = f"phone={local_num}&countryCode=in"
+    payload = {"phone": local_num, "countryCode": "in"}
     headers = {
         "x-rapidapi-key": RAPIDAPI_KEY,
         "x-rapidapi-host": "truecaller-api3.p.rapidapi.com",
@@ -58,13 +57,13 @@ async def check_truecaller(session, phone):
         async with session.post(url, data=payload, headers=headers) as resp:
             if resp.status == 200:
                 data = await resp.json()
-                # Handling Truecaller JSON response structure
-                if 'truecaller_lookup' in data:
-                    tc = data['truecaller_lookup']
-                    if tc.get('valid') == 'Valid' and 'data' in tc and len(tc['data']) > 0:
-                        return tc['data'][0].get('name', 'Unknown')
-                elif 'data' in data and len(data['data']) > 0:
+                # Deep parsing for all Truecaller response formats
+                if 'data' in data and isinstance(data['data'], list) and len(data['data']) > 0:
                     return data['data'][0].get('name', 'Unknown')
+                elif 'truecaller_lookup' in data:
+                    tc = data['truecaller_lookup']
+                    if 'data' in tc and len(tc['data']) > 0:
+                        return tc['data'][0].get('name', 'Unknown')
                 elif 'name' in data:
                     return data.get('name', 'Unknown')
     except:
@@ -117,7 +116,7 @@ async def process_single_number(phone, tg_client, http_session):
     ws_status = await ws_task
     tc_name = await tc_task
     
-    # Priority for Demographics: Truecaller Real Name -> Telegram Name
+    # Priority for Demographics: Truecaller Real Name -> Fallback to Telegram Name
     final_name = tc_name if tc_name != "Unknown" else tg_name
     age, gender, race = await fetch_demographics(http_session, final_name, phone)
     
