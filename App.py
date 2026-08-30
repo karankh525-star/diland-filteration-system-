@@ -18,7 +18,6 @@ TG_ACCOUNTS = [
 
 WS_INSTANCE_ID = "710722720740"
 WS_API_TOKEN = "2105b56dc221492780d5a4cc427ec212eb50b4865ef948fd9d"
-RAPIDAPI_KEY = "d2c1de7c7emsh6d981d4ffe2441dp1c9aeejsn63e76defa553"
 
 AGIFY_KEY = "e6d7d4a5debe860b1078275454db5c8b"
 GENDERIZE_KEY = "0f1bef8f172675dbb5c5be9f1ba1e2cc"
@@ -29,46 +28,30 @@ GENDERIZE_KEY = "0f1bef8f172675dbb5c5be9f1ba1e2cc"
 async def check_whatsapp(session, phone):
     clean_num = phone.replace('+', '')
     url = f"https://7107.api.greenapi.com/waInstance{WS_INSTANCE_ID}/checkWhatsapp/{WS_API_TOKEN}"
+    payload = {"phoneNumber": int(clean_num)}
     try:
-        async with session.post(url, json={"phoneNumber": clean_num}) as resp:
-            data = await resp.json()
-            return "Yes" if data.get('existsWhatsapp') else "No"
+        async with session.post(url, json=payload) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                return "Yes" if data.get('existsWhatsapp') else "No"
+            return "No"
     except:
-        return "Error"
-
-async def check_truecaller(session, phone):
-    clean_num = phone.replace('+', '')
-    if clean_num.startswith('91') and len(clean_num) == 12:
-        local_num = clean_num[2:]
-    else:
-        local_num = clean_num
-        
-    url = "https://truecaller-api11.p.rapidapi.com/v2.php"
-    payload = f"phone={local_num}&countryCode=in"
-    headers = {
-        "x-rapidapi-key": RAPIDAPI_KEY,
-        "x-rapidapi-host": "truecaller-api11.p.rapidapi.com",
-        "Content-Type": "application/x-www-form-urlencoded"
-    }
-    try:
-        async with session.post(url, data=payload, headers=headers) as resp:
-            data = await resp.json()
-            if 'data' in data and len(data['data']) > 0:
-                return data['data'][0].get('name', 'Unknown')
-            elif 'name' in data: 
-                return data.get('name', 'Unknown')
-    except:
-        pass
-    return "Unknown"
+        return "No"
 
 async def fetch_demographics(session, first_name, phone):
     if not first_name or first_name == "-" or first_name.lower() == "unknown":
         age, gender = "Unknown", "Unknown"
     else:
-        fname = first_name.split()[0]
+        # Clean name to remove special/Chinese characters for Agify/Genderize lookup
+        clean_fname = re.sub(r'[^\w\s]', '', first_name).strip()
+        if not clean_fname:
+            clean_fname = first_name.split()[0]
+        else:
+            clean_fname = clean_fname.split()[0]
+            
         try:
-            age_url = f"https://api.agify.io?name={fname}&apikey={AGIFY_KEY}"
-            gen_url = f"https://api.genderize.io?name={fname}&apikey={GENDERIZE_KEY}"
+            age_url = f"https://api.agify.io?name={clean_fname}&apikey={AGIFY_KEY}"
+            gen_url = f"https://api.genderize.io?name={clean_fname}&apikey={GENDERIZE_KEY}"
             age_req, gen_req = await asyncio.gather(session.get(age_url), session.get(gen_url))
             age_data, gen_data = await age_req.json(), await gen_req.json()
             age = age_data.get('age', 'Unknown')
@@ -76,7 +59,7 @@ async def fetch_demographics(session, first_name, phone):
         except:
             age, gender = "Unknown", "Unknown"
             
-    # Strict Region Lock for Indian Numbers (+91)
+    # Strict Region Lock for Indian Numbers
     if phone.startswith('+91') or phone.startswith('91'):
         race = "India"
     else:
@@ -86,7 +69,6 @@ async def fetch_demographics(session, first_name, phone):
 
 async def process_single_number(phone, tg_client, http_session):
     ws_task = asyncio.create_task(check_whatsapp(http_session, phone))
-    tc_task = asyncio.create_task(check_truecaller(http_session, phone))
     
     uid, username, tg_status, tg_last_seen, active_days, tg_name = "Not Found", "Not Found", "Invalid", "-", "-", "-"
     
@@ -105,14 +87,10 @@ async def process_single_number(phone, tg_client, http_session):
         pass
 
     ws_status = await ws_task
-    tc_name = await tc_task
-    
-    target_name_for_api = tc_name if tc_name != "Unknown" else tg_name
-    age, gender, race = await fetch_demographics(http_session, target_name_for_api, phone)
+    age, gender, race = await fetch_demographics(http_session, tg_name, phone)
     
     return {
         "Phone Number": phone,
-        "Truecaller Name": tc_name,
         "Telegram Name": tg_name,
         "Telegram (Active/Invalid)": tg_status,
         "TG UID": uid,
@@ -145,7 +123,7 @@ async def main_processor(phone_list, progress_bar):
             results.extend(batch_results)
             
             progress_bar.progress(min((i + 3) / len(phone_list), 1.0))
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.3)
             
     for client in clients:
         await client.disconnect()
