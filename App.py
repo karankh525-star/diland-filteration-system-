@@ -100,23 +100,35 @@ async def check_whatsapp_data(session, phone):
     return ws_status, ws_name
 
 async def fetch_demographics(session, final_name, phone):
-    # Strict filter to prevent fake data generation
     invalid_names = ["unknown", "-", "", "none", "hidden", "privacy", "target user", "target", "user", "admin", "null"]
     if not final_name or any(inv in str(final_name).lower() for inv in invalid_names):
         return "Unknown", "Unknown", "India" if phone.startswith('+91') else "US/Intl"
     
-    # ADVANCED SANITIZER: Keeps only pure alphabets for highly accurate Age/Gender match
-    clean_fname = re.sub(r'[^a-zA-Z]', ' ', final_name).strip()
+    # ADVANCED SANITIZER: Extract pure first name for high accuracy
+    clean_fname = re.sub(r'[^a-zA-Z]', ' ', str(final_name)).strip()
     clean_fname = clean_fname.split()[0] if clean_fname else ""
     
     if len(clean_fname) < 2:
         return "Unknown", "Unknown", "India" if phone.startswith('+91') else "US/Intl"
         
     try:
+        # First attempt with your API keys
         age_req, gen_req = await asyncio.gather(
             session.get(f"https://api.agify.io?name={clean_fname}&apikey={AGIFY_KEY}"),
             session.get(f"https://api.genderize.io?name={clean_fname}&apikey={GENDERIZE_KEY}")
         )
+        
+        # FALLBACK: If Key limit reached (429), try without key (uses server IP limit)
+        if age_req.status == 429 or gen_req.status == 429:
+            age_req, gen_req = await asyncio.gather(
+                session.get(f"https://api.agify.io?name={clean_fname}"),
+                session.get(f"https://api.genderize.io?name={clean_fname}")
+            )
+            
+        # Check if STILL blocked after fallback
+        if age_req.status == 429 or gen_req.status == 429:
+            return "Limit Reached ⏳", "Limit Reached ⏳", "India" if phone.startswith('+91') else "US/Intl"
+            
         age = (await age_req.json()).get('age', 'Unknown')
         gender = (await gen_req.json()).get('gender', 'Unknown')
     except:
