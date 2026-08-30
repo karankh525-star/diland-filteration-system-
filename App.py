@@ -18,6 +18,7 @@ TG_ACCOUNTS = [
 
 WS_INSTANCE_ID = "710722720740"
 WS_API_TOKEN = "2105b56dc221492780d5a4cc427ec212eb50b4865ef948fd9d"
+RAPIDAPI_KEY = "d2c1de7c7emsh6d981d4ffe2441dp1c9aeejsn63e76defa553"
 
 AGIFY_KEY = "e6d7d4a5debe860b1078275454db5c8b"
 GENDERIZE_KEY = "0f1bef8f172675dbb5c5be9f1ba1e2cc"
@@ -38,17 +39,44 @@ async def check_whatsapp(session, phone):
     except:
         return "No"
 
+async def check_truecaller(session, phone):
+    clean_num = phone.replace('+', '')
+    if clean_num.startswith('91') and len(clean_num) == 12:
+        local_num = clean_num[2:]
+    else:
+        local_num = clean_num
+        
+    # Updated Correct Endpoint from your screenshot
+    url = "https://truecaller-api3.p.rapidapi.com/v2.php"
+    payload = f"phone={local_num}&countryCode=in"
+    headers = {
+        "x-rapidapi-key": RAPIDAPI_KEY,
+        "x-rapidapi-host": "truecaller-api3.p.rapidapi.com",
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+    try:
+        async with session.post(url, data=payload, headers=headers) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                # Handling Truecaller JSON response structure
+                if 'truecaller_lookup' in data:
+                    tc = data['truecaller_lookup']
+                    if tc.get('valid') == 'Valid' and 'data' in tc and len(tc['data']) > 0:
+                        return tc['data'][0].get('name', 'Unknown')
+                elif 'data' in data and len(data['data']) > 0:
+                    return data['data'][0].get('name', 'Unknown')
+                elif 'name' in data:
+                    return data.get('name', 'Unknown')
+    except:
+        pass
+    return "Unknown"
+
 async def fetch_demographics(session, first_name, phone):
     if not first_name or first_name == "-" or first_name.lower() == "unknown":
         age, gender = "Unknown", "Unknown"
     else:
-        # Clean name to remove special/Chinese characters for Agify/Genderize lookup
         clean_fname = re.sub(r'[^\w\s]', '', first_name).strip()
-        if not clean_fname:
-            clean_fname = first_name.split()[0]
-        else:
-            clean_fname = clean_fname.split()[0]
-            
+        clean_fname = clean_fname.split()[0] if clean_fname else first_name.split()[0]
         try:
             age_url = f"https://api.agify.io?name={clean_fname}&apikey={AGIFY_KEY}"
             gen_url = f"https://api.genderize.io?name={clean_fname}&apikey={GENDERIZE_KEY}"
@@ -59,7 +87,6 @@ async def fetch_demographics(session, first_name, phone):
         except:
             age, gender = "Unknown", "Unknown"
             
-    # Strict Region Lock for Indian Numbers
     if phone.startswith('+91') or phone.startswith('91'):
         race = "India"
     else:
@@ -69,12 +96,13 @@ async def fetch_demographics(session, first_name, phone):
 
 async def process_single_number(phone, tg_client, http_session):
     ws_task = asyncio.create_task(check_whatsapp(http_session, phone))
+    tc_task = asyncio.create_task(check_truecaller(http_session, phone))
     
-    uid, username, tg_status, tg_last_seen, active_days, tg_name = "Not Found", "Not Found", "Invalid", "-", "-", "-"
+    uid, username, tg_status, tg_last_seen, active_days, tg_name = "Not Found", "Not Found", "Not Available", "-", "-", "-"
     
     try:
         user = await tg_client.get_entity(phone)
-        tg_status = "Active"
+        tg_status = "Available"
         uid = str(user.id)
         username = f"@{user.username}" if user.username else "None"
         tg_name = user.first_name if user.first_name else "-"
@@ -87,17 +115,22 @@ async def process_single_number(phone, tg_client, http_session):
         pass
 
     ws_status = await ws_task
-    age, gender, race = await fetch_demographics(http_session, tg_name, phone)
+    tc_name = await tc_task
+    
+    # Priority for Demographics: Truecaller Real Name -> Telegram Name
+    final_name = tc_name if tc_name != "Unknown" else tg_name
+    age, gender, race = await fetch_demographics(http_session, final_name, phone)
     
     return {
         "Phone Number": phone,
+        "Truecaller Real Name": tc_name,
         "Telegram Name": tg_name,
-        "Telegram (Active/Invalid)": tg_status,
+        "Telegram Username": username,
+        "Telegram Status": tg_status,
         "TG UID": uid,
-        "TG Username": username,
         "TG Last Seen": tg_last_seen,
         "TG Active Days": active_days,
-        "WhatsApp (Yes/No)": ws_status,
+        "WhatsApp Status": ws_status,
         "Target Age": age,
         "Target Gender": gender,
         "Race/Region": race
