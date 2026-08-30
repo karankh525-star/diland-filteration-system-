@@ -47,7 +47,8 @@ async def check_truecaller(session, phone):
         local_num = clean_num
         
     url = "https://truecaller-api3.p.rapidapi.com/v2.php"
-    payload = {"phone": local_num, "countryCode": "in"}
+    # Correct URL-encoded payload format for RapidAPI Truecaller
+    payload = f"phone={local_num}&countryCode=in"
     headers = {
         "x-rapidapi-key": RAPIDAPI_KEY,
         "x-rapidapi-host": "truecaller-api3.p.rapidapi.com",
@@ -57,7 +58,7 @@ async def check_truecaller(session, phone):
         async with session.post(url, data=payload, headers=headers) as resp:
             if resp.status == 200:
                 data = await resp.json()
-                # Deep parsing for all Truecaller response formats
+                # Comprehensive parsing for Truecaller JSON structures
                 if 'data' in data and isinstance(data['data'], list) and len(data['data']) > 0:
                     return data['data'][0].get('name', 'Unknown')
                 elif 'truecaller_lookup' in data:
@@ -116,7 +117,7 @@ async def process_single_number(phone, tg_client, http_session):
     ws_status = await ws_task
     tc_name = await tc_task
     
-    # Priority for Demographics: Truecaller Real Name -> Fallback to Telegram Name
+    # Priority: Truecaller Real Name -> Fallback to Telegram Name
     final_name = tc_name if tc_name != "Unknown" else tg_name
     age, gender, race = await fetch_demographics(http_session, final_name, phone)
     
@@ -207,7 +208,7 @@ if uploaded_file is not None:
                 df = df[df['Age_Num'] == target_age]
                 df = df.drop(columns=['Age_Num'])
             
-            st.success(txt["success"])
+            st.success(txt["success"]) 
             st.dataframe(df)
             
             output = io.BytesIO()
