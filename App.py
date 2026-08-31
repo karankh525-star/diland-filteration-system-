@@ -23,6 +23,8 @@ WS_INSTANCE_ID = "710722720740"
 WS_API_TOKEN = "2105b56dc221492780d5a4cc427ec212eb50b4865ef948fd9d"
 
 RAPIDAPI_KEY = "d2c1de7c7emsh6d981d4ffe2441dp1c9aeejsn63e76defa553"
+
+# Dhyan dein: Agar limit hit ho, toh nayi key yahan daal sakte hain. Code bina key ke bhi try karega.
 AGIFY_KEY = "e6d7d4a5debe860b1078275454db5c8b"
 GENDERIZE_KEY = "0f1bef8f172675dbb5c5be9f1ba1e2cc"
 
@@ -30,18 +32,14 @@ GENDERIZE_KEY = "0f1bef8f172675dbb5c5be9f1ba1e2cc"
 # 2. RAPID-FIRE SIMULTANEOUS API FETCHER
 # ==========================================
 async def fetch_api(session, url, headers, params=None, data=None, method="GET"):
-    endpoint = url.split('/')[-1] if url.split('/')[-1] else url.split('/')[-2]
     try:
         if method == "GET":
-            async with session.get(url, headers=headers, params=params, timeout=5) as resp:
-                if resp.status != 200: print(f"API Blocked ({resp.status}) on {endpoint}")
+            async with session.get(url, headers=headers, params=params, timeout=4) as resp:
                 return await resp.json() if resp.status == 200 else None
         else:
-            async with session.post(url, headers=headers, data=data, timeout=5) as resp:
-                if resp.status != 200: print(f"API Blocked ({resp.status}) on {endpoint}")
+            async with session.post(url, headers=headers, data=data, timeout=4) as resp:
                 return await resp.json() if resp.status == 200 else None
-    except Exception as e:
-        print(f"Timeout/Error on {endpoint}")
+    except:
         return None
 
 async def check_all_caller_ids(session, phone):
@@ -72,18 +70,19 @@ async def check_all_caller_ids(session, phone):
     for res in results:
         if isinstance(res, dict):
             if 'name' in res and res['name'] and str(res['name']).lower() not in ["unknown", "", "none"]:
-                return res['name']
+                return str(res['name']).strip()
             if 'data' in res and isinstance(res['data'], list) and len(res['data']) > 0 and 'name' in res['data'][0]:
-                return res['data'][0]['name']
+                return str(res['data'][0]['name']).strip()
             if 'truecaller_lookup' in res and 'data' in res['truecaller_lookup'] and len(res['truecaller_lookup']['data']) > 0:
-                return res['truecaller_lookup']['data'][0].get('name', 'Unknown')
+                return str(res['truecaller_lookup']['data'][0].get('name', 'Unknown')).strip()
         elif isinstance(res, list) and len(res) > 0 and isinstance(res[0], dict) and 'name' in res[0]:
-            return res[0]['name']
+            return str(res[0]['name']).strip()
     return "Unknown"
 
 async def check_whatsapp_data(session, phone):
     clean_num = phone.replace('+', '')
     ws_status, ws_name = "No", "Unknown"
+    
     try:
         async with session.post(f"https://7107.api.greenapi.com/waInstance{WS_INSTANCE_ID}/checkWhatsapp/{WS_API_TOKEN}", json={"phoneNumber": int(clean_num)}) as resp:
             if resp.status == 200:
@@ -94,45 +93,47 @@ async def check_whatsapp_data(session, phone):
                 if resp.status == 200:
                     fetched_name = (await resp.json()).get('name', 'Unknown')
                     if fetched_name and str(fetched_name).strip() != "":
-                        ws_name = fetched_name
+                        ws_name = str(fetched_name).strip()
     except:
         pass
     return ws_status, ws_name
 
 async def fetch_demographics(session, final_name, phone):
+    """BULLETPROOF AGIFY & GENDERIZE LOGIC"""
     invalid_names = ["unknown", "-", "", "none", "hidden", "privacy", "target user", "target", "user", "admin", "null"]
-    if not final_name or any(inv in str(final_name).lower() for inv in invalid_names):
+    if not final_name or str(final_name).lower().strip() in invalid_names:
         return "Unknown", "Unknown", "India" if phone.startswith('+91') else "US/Intl"
     
-    # ADVANCED SANITIZER: Extract pure first name for high accuracy
-    clean_fname = re.sub(r'[^a-zA-Z]', ' ', str(final_name)).strip()
-    clean_fname = clean_fname.split()[0] if clean_fname else ""
+    # Aggressively extract ONLY alphabets to ensure Agify works (e.g. @Johnny123 -> Johnny)
+    clean_fname = re.sub(r'[^a-zA-Z]', '', str(final_name)).strip()
     
     if len(clean_fname) < 2:
         return "Unknown", "Unknown", "India" if phone.startswith('+91') else "US/Intl"
         
+    age, gender = "Unknown", "Unknown"
+    
     try:
-        # First attempt with your API keys
-        age_req, gen_req = await asyncio.gather(
-            session.get(f"https://api.agify.io?name={clean_fname}&apikey={AGIFY_KEY}"),
-            session.get(f"https://api.genderize.io?name={clean_fname}&apikey={GENDERIZE_KEY}")
-        )
+        # ATTEMPT 1: With API Key
+        age_resp = await session.get(f"https://api.agify.io?name={clean_fname}&apikey={AGIFY_KEY}")
+        gen_resp = await session.get(f"https://api.genderize.io?name={clean_fname}&apikey={GENDERIZE_KEY}")
         
-        # FALLBACK: If Key limit reached (429), try without key (uses server IP limit)
-        if age_req.status == 429 or gen_req.status == 429:
-            age_req, gen_req = await asyncio.gather(
-                session.get(f"https://api.agify.io?name={clean_fname}"),
-                session.get(f"https://api.genderize.io?name={clean_fname}")
-            )
+        # ATTEMPT 2: If Limit Exhausted (429) or Unauthorized (401), use FREE IP-based Tier
+        if age_resp.status in [429, 401]:
+            age_resp = await session.get(f"https://api.agify.io?name={clean_fname}")
+        if gen_resp.status in [429, 401]:
+            gen_resp = await session.get(f"https://api.genderize.io?name={clean_fname}")
+
+        # Parse Data safely
+        if age_resp.status == 200:
+            age_data = await age_resp.json()
+            if age_data.get('age'): age = str(age_data['age'])
             
-        # Check if STILL blocked after fallback
-        if age_req.status == 429 or gen_req.status == 429:
-            return "Limit Reached ⏳", "Limit Reached ⏳", "India" if phone.startswith('+91') else "US/Intl"
-            
-        age = (await age_req.json()).get('age', 'Unknown')
-        gender = (await gen_req.json()).get('gender', 'Unknown')
-    except:
-        age, gender = "Unknown", "Unknown"
+        if gen_resp.status == 200:
+            gen_data = await gen_resp.json()
+            if gen_data.get('gender'): gender = str(gen_data['gender'])
+
+    except Exception as e:
+        print(f"Demo Error: {e}")
         
     return age, gender, "India" if phone.startswith('+91') else "US/Intl"
 
@@ -155,9 +156,12 @@ async def process_single_number(phone, tg_client, http_session):
             user = result.users[0]
             tg_status = "Available"
             uid = str(user.id)
-            username = f"@{user.username}" if user.username else "None"
             
-            # Privacy Handling
+            # Remove @ from username for better Demographic extraction
+            raw_username = user.username if user.username else ""
+            username = f"@{raw_username}" if raw_username else "None"
+            
+            # Privacy Name Handle
             fetched_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
             if fetched_name.lower() == "target user":
                 tg_name = "Hidden (Privacy)"
@@ -181,10 +185,16 @@ async def process_single_number(phone, tg_client, http_session):
     # SMART DEMOGRAPHICS NAME SELECTION (Waterfall Logic)
     # ---------------------------------------------------------
     demo_name = "Unknown"
-    if caller_name not in ["Unknown", "", "-"]: demo_name = caller_name
-    elif ws_name not in ["Unknown", "", "-"]: demo_name = ws_name
-    elif tg_name not in ["Hidden (Privacy)", "-", "", "Unknown"]: demo_name = tg_name
-    elif username not in ["None", "Not Found", "-", ""]: demo_name = username
+    
+    if caller_name not in ["Unknown", "", "-"]:
+        demo_name = caller_name
+    elif ws_name not in ["Unknown", "", "-"]:
+        demo_name = ws_name
+    elif tg_name not in ["Hidden (Privacy)", "-", "", "Unknown"]:
+        demo_name = tg_name
+    elif raw_username != "":
+        # Passes the raw username (e.g. Cojack861) to the Agify sanitizer
+        demo_name = raw_username
         
     age, gender, race = await fetch_demographics(http_session, demo_name, phone)
     
@@ -249,6 +259,7 @@ st.sidebar.markdown(f"**{txt['specs']}**\n- **TG Engines:** 3 Active (Rotation)\
 st.title(txt["title"])
 st.write("---")
 
+# AGE FILTER
 target_age = st.sidebar.number_input(txt["filter"], min_value=0, max_value=120, value=0)
 
 uploaded_file = st.file_uploader(txt["upload"], type=["txt"])
