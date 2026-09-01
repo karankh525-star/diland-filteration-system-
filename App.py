@@ -9,9 +9,11 @@ from datetime import datetime, timezone
 from telethon import TelegramClient
 from telethon.tl.functions.contacts import ImportContactsRequest, DeleteContactsRequest
 from telethon.tl.types import InputPhoneContact
+from bs4 import BeautifulSoup
+import urllib.parse
 
 # ==========================================
-# 1. API CREDENTIALS & CONFIG (14 ENGINES)
+# 1. API CREDENTIALS & CONFIG 
 # ==========================================
 TG_ACCOUNTS = [
     {"session": "session_1", "api_id": 32862363, "api_hash": "73ac9de4fbf7087e99a6ce9b0d46e25f"},
@@ -22,59 +24,41 @@ TG_ACCOUNTS = [
 WS_INSTANCE_ID = "710722720740"
 WS_API_TOKEN = "2105b56dc221492780d5a4cc427ec212eb50b4865ef948fd9d"
 
-RAPIDAPI_KEY = "d2c1de7c7emsh6d981d4ffe2441dp1c9aeejsn63e76defa553"
 AGIFY_KEY = "e6d7d4a5debe860b1078275454db5c8b"
 GENDERIZE_KEY = "0f1bef8f172675dbb5c5be9f1ba1e2cc"
 
 # ==========================================
-# 2. RAPID-FIRE SIMULTANEOUS API FETCHER
+# 2. FREE OSINT & WHATSAPP ENGINES
 # ==========================================
-async def fetch_api(session, url, headers, params=None, data=None, method="GET"):
-    try:
-        if method == "GET":
-            async with session.get(url, headers=headers, params=params, timeout=4) as resp:
-                return await resp.json() if resp.status == 200 else None
-        else:
-            async with session.post(url, headers=headers, data=data, timeout=4) as resp:
-                return await resp.json() if resp.status == 200 else None
-    except:
-        return None
-
 async def check_all_caller_ids(session, phone):
+    """100% FREE DuckDuckGo OSINT Dorking - No API Key Required"""
     clean_num = phone.replace('+', '')
-    if clean_num.startswith('91'):
-        cc, local_num = 'in', clean_num[2:]
-    elif clean_num.startswith('1'):
-        cc, local_num = 'us', clean_num[1:]
+    
+    if clean_num.startswith('1') and len(clean_num) == 11:
+        search_term = f'"{clean_num[1:4]}-{clean_num[4:7]}-{clean_num[7:]}"'
     else:
-        cc, local_num = 'us', clean_num
+        search_term = f'"{phone}"'
 
-    base_headers = {"x-rapidapi-key": RAPIDAPI_KEY}
+    url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(search_term)}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
 
-    h_sync = {**base_headers, "x-rapidapi-host": "syncme1.p.rapidapi.com"}
-    t_sync = fetch_api(session, "https://syncme1.p.rapidapi.com/api/v1/search", h_sync, params={"phone": clean_num})
-    
-    h_eye = {**base_headers, "x-rapidapi-host": "caller-id-social-search-eyecon.p.rapidapi.com"}
-    t_eye = fetch_api(session, "https://caller-id-social-search-eyecon.p.rapidapi.com/image", h_eye, params={"phone": clean_num})
-    
-    h_tc = {**base_headers, "x-rapidapi-host": "truecaller-api3.p.rapidapi.com", "Content-Type": "application/x-www-form-urlencoded"}
-    t_tc = fetch_api(session, "https://truecaller-api3.p.rapidapi.com/v2.php", h_tc, data=f"phone={local_num}&countryCode={cc}", method="POST")
-    
-    h_kyb = {**base_headers, "x-rapidapi-host": "know-your-business.p.rapidapi.com"}
-    t_kyb = fetch_api(session, "https://know-your-business.p.rapidapi.com/", h_kyb, params={"phone": clean_num})
-    
-    results = await asyncio.gather(t_sync, t_eye, t_tc, t_kyb, return_exceptions=True)
-    
-    for res in results:
-        if isinstance(res, dict):
-            if 'name' in res and res['name'] and str(res['name']).lower() not in ["unknown", "", "none"]:
-                return str(res['name']).strip()
-            if 'data' in res and isinstance(res['data'], list) and len(res['data']) > 0 and 'name' in res['data'][0]:
-                return str(res['data'][0]['name']).strip()
-            if 'truecaller_lookup' in res and 'data' in res['truecaller_lookup'] and len(res['truecaller_lookup']['data']) > 0:
-                return str(res['truecaller_lookup']['data'][0].get('name', 'Unknown')).strip()
-        elif isinstance(res, list) and len(res) > 0 and isinstance(res[0], dict) and 'name' in res[0]:
-            return str(res[0]['name']).strip()
+    try:
+        async with session.get(url, headers=headers, timeout=5) as resp:
+            if resp.status == 200:
+                html = await resp.text()
+                soup = BeautifulSoup(html, 'html.parser')
+                results = soup.find_all('a', class_='result__snippet')
+                
+                for res in results:
+                    text = res.get_text().strip()
+                    words = text.split()
+                    for i in range(len(words)-1):
+                        if words[i].istitle() and words[i+1].istitle() and len(words[i]) > 2:
+                            return f"{words[i]} {words[i+1]}" 
+    except:
+        pass
     return "Unknown"
 
 async def check_whatsapp_data(session, phone):
@@ -97,21 +81,15 @@ async def check_whatsapp_data(session, phone):
     return ws_status, ws_name
 
 async def fetch_demographics(session, final_name, phone):
-    """SUPER SMART NAME SANITIZER FOR AGIFY (10x Accuracy)"""
+    """SMART AI NAME SANITIZER FOR AGIFY (10x Accuracy)"""
     invalid_names = ["unknown", "-", "", "none", "hidden", "privacy", "target user", "target", "user", "admin", "null"]
     if not final_name or str(final_name).lower().strip() in invalid_names:
         return "Unknown", "Unknown", "India" if phone.startswith('+91') else "US/Intl"
     
-    # Step 1: Handle CamelCase (JohnDoe -> John Doe)
     spaced_name = re.sub(r'([a-z])([A-Z])', r'\1 \2', str(final_name))
-    
-    # Step 2: Replace all symbols/numbers with SPACE (Rahul_99 -> Rahul  )
     clean_fname = re.sub(r'[^a-zA-Z]', ' ', spaced_name).strip()
-    
-    # Step 3: Extract strictly the first word for Agify
     clean_fname = clean_fname.split()[0] if clean_fname else ""
     
-    # Step 4: Ignore fake username words
     fake_words = ["gamer", "boy", "girl", "cool", "super", "crazy", "dark", "pro", "bot", "king", "queen", "cute", "sweet"]
     if len(clean_fname) < 2 or clean_fname.lower() in fake_words:
         return "Unknown", "Unknown", "India" if phone.startswith('+91') else "US/Intl"
@@ -119,11 +97,9 @@ async def fetch_demographics(session, final_name, phone):
     age, gender = "Unknown", "Unknown"
     
     try:
-        # Try APIs
         age_resp = await session.get(f"https://api.agify.io?name={clean_fname}&apikey={AGIFY_KEY}")
         gen_resp = await session.get(f"https://api.genderize.io?name={clean_fname}&apikey={GENDERIZE_KEY}")
         
-        # Fallback to Free API if keys are exhausted
         if age_resp.status in [429, 401]:
             age_resp = await session.get(f"https://api.agify.io?name={clean_fname}")
         if gen_resp.status in [429, 401]:
@@ -136,7 +112,6 @@ async def fetch_demographics(session, final_name, phone):
         if gen_resp.status == 200:
             gen_data = await gen_resp.json()
             if gen_data.get('gender'): gender = str(gen_data['gender'])
-
     except:
         pass
         
@@ -149,10 +124,9 @@ async def process_single_number(phone, tg_client, http_session):
     ws_task = asyncio.create_task(check_whatsapp_data(http_session, phone))
     caller_task = asyncio.create_task(check_all_caller_ids(http_session, phone))
     
-    uid, username, tg_status, tg_last_seen, active_days, tg_name = "Not Found", "Not Found", "Not Available", "-", "-", "-"
+    uid, username, tg_status, tg_last_seen, tg_name = "Not Found", "Not Found", "Not Available", "-", "-"
     
     try:
-        # TELEGRAM GHOST SYNC
         rand_client_id = random.randint(10000, 999999)
         contact = InputPhoneContact(client_id=rand_client_id, phone=phone, first_name="Target", last_name="User")
         result = await tg_client(ImportContactsRequest([contact]))
@@ -174,7 +148,6 @@ async def process_single_number(phone, tg_client, http_session):
             if hasattr(user.status, 'was_online') and user.status.was_online:
                 last_online = user.status.was_online
                 tg_last_seen = last_online.strftime('%Y-%m-%d')
-                active_days = str((datetime.now(timezone.utc) - last_online).days)
                 
             await tg_client(DeleteContactsRequest(id=[user.id]))
     except:
@@ -183,20 +156,11 @@ async def process_single_number(phone, tg_client, http_session):
     ws_status, ws_name = await ws_task
     caller_name = await caller_task
     
-    # ---------------------------------------------------------
-    # SMART DEMOGRAPHICS WATERFALL
-    # ---------------------------------------------------------
     demo_name = "Unknown"
-    
-    if caller_name not in ["Unknown", "", "-"]:
-        demo_name = caller_name
-    elif ws_name not in ["Unknown", "", "-"]:
-        demo_name = ws_name
-    elif tg_name not in ["Hidden (Privacy)", "-", "", "Unknown"]:
-        demo_name = tg_name
-    elif username not in ["None", "Not Found", "-", ""]:
-        # Removes the @ for Agify parsing
-        demo_name = username.replace("@", "")
+    if caller_name not in ["Unknown", "", "-"]: demo_name = caller_name
+    elif ws_name not in ["Unknown", "", "-"]: demo_name = ws_name
+    elif tg_name not in ["Hidden (Privacy)", "-", "", "Unknown"]: demo_name = tg_name
+    elif raw_username != "": demo_name = raw_username.replace("@", "")
         
     age, gender, race = await fetch_demographics(http_session, demo_name, phone)
     
@@ -235,7 +199,7 @@ async def main_processor(phone_list, progress_bar):
     return results
 
 # ==========================================
-# 4. STREAMLIT UI (Multilingual + Age Filter)
+# 4. STREAMLIT UI 
 # ==========================================
 st.set_page_config(page_title="Ultimate OSINT Engine", layout="wide")
 
@@ -243,25 +207,24 @@ st.sidebar.title("Settings / 设置")
 lang = st.sidebar.radio("Language / 语言", ["English", "中文"])
 
 txt = {
-    "title": "Ultimate OSINT Engine (14-API)" if lang == "English" else "终极开源情报引擎 (14-API)",
+    "title": "Ultimate OSINT Engine (Free-Tier)" if lang == "English" else "终极开源情报引擎 (免费版)",
     "specs": "System Specs 🚀" if lang == "English" else "系统规格 🚀",
     "upload": "Upload .txt file with phone numbers" if lang == "English" else "上传带有电话号码的 .txt 文件",
     "filter": "Filter by Target Age (0 = Show All)" if lang == "English" else "按目标年龄过滤（0 = 显示全部）",
     "loaded": "Loaded unique numbers: " if lang == "English" else "已加载唯一号码: ",
     "btn": "Start Processing" if lang == "English" else "开始处理",
-    "processing": "Firing 14 Engines Concurrently... (AI Age Tracker ON)" if lang == "English" else "正在并行启动14个引擎... (开启AI年龄追踪)",
+    "processing": "Firing Parallel Engines... (AI Age Tracker ON)" if lang == "English" else "正在并行启动引擎... (开启AI年龄追踪)",
     "success": "Processing Complete!" if lang == "English" else "处理完成！",
     "download": "Download Excel (.xlsx)" if lang == "English" else "下载 Excel (.xlsx)",
     "no_data": "No records found for the selected age." if lang == "English" else "未找到符合所选年龄的记录。"
 }
 
-st.sidebar.markdown(f"**{txt['specs']}**\n- **TG Engines:** 3 Active (Rotation)\n- **WA Engines:** 2 Active\n- **OSINT APIs:** 7 Active\n- **Demo APIs:** 2 Active\n- **Total Power:** 14 APIs Parallel\n- **Smart AI:** Username Parser ON")
+st.sidebar.markdown(f"**{txt['specs']}**\n- **TG Engines:** 3 Active (Rotation)\n- **WA Engines:** 1 Active (Green-API)\n- **OSINT:** Web Scraper (DuckDuckGo)\n- **Demo APIs:** 2 Active (Fallback ON)\n- **Smart AI:** Username Parser ON")
 
 st.title(txt["title"])
 st.write("---")
 
 target_age = st.sidebar.number_input(txt["filter"], min_value=0, max_value=120, value=0)
-
 uploaded_file = st.file_uploader(txt["upload"], type=["txt"])
 
 if uploaded_file is not None:
