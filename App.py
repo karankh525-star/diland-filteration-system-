@@ -124,7 +124,8 @@ async def process_single_number(phone, tg_client, http_session):
     ws_task = asyncio.create_task(check_whatsapp_data(http_session, phone))
     caller_task = asyncio.create_task(check_all_caller_ids(http_session, phone))
     
-    uid, username, tg_status, tg_last_seen, tg_name = "Not Found", "Not Found", "Not Available", "-", "-"
+    # FIX: Define raw_username here at the very beginning so it never causes UnboundLocalError
+    uid, username, tg_status, tg_last_seen, tg_name, raw_username = "Not Found", "Not Found", "Not Available", "-", "-", ""
     
     try:
         rand_client_id = random.randint(10000, 999999)
@@ -177,7 +178,6 @@ async def process_single_number(phone, tg_client, http_session):
         "Target Gender": gender,
         "Race/Region": race
     }
-
 async def main_processor(phone_list, progress_bar):
     clients = []
     for acc in TG_ACCOUNTS:
